@@ -27,6 +27,8 @@ wheels/
 *.h5
 *.hdf5
 *.pb
+*.pth
+*.pt
 
 # Data
 data/

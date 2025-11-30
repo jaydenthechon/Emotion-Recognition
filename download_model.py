@@ -13,8 +13,8 @@ def download_pretrained_model():
     
     print("Pre-trained Model Download Options:")
     print("\n1. Use a model from Kaggle or GitHub")
-    print("   - Search for 'FER2013 emotion detection model'")
-    print("   - Download the .h5 file and place it in this directory")
+    print("   - Search for 'FER2013 emotion detection PyTorch model'")
+    print("   - Download the .pth file and place it in this directory")
     print("\n2. Train your own model:")
     print("   - Download FER2013 dataset from Kaggle")
     print("   - Run train_model.py")
@@ -26,7 +26,7 @@ def download_pretrained_model():
     # Uncomment and modify the following:
     """
     model_url = "YOUR_MODEL_URL_HERE"
-    model_path = "emotion_model.h5"
+    model_path = "emotion_model.pth"
     
     print(f"Downloading model from {model_url}...")
     

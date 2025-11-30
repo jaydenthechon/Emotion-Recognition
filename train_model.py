@@ -1,128 +1,178 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
 import numpy as np
-from keras.models import Sequential
-from keras.layers import Conv2D, MaxPooling2D, Dense, Dropout, Flatten, BatchNormalization
-from keras.preprocessing.image import ImageDataGenerator
-from keras.optimizers import Adam
-from keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 import os
 
-def create_model():
-    """Create CNN model for emotion recognition"""
-    model = Sequential([
-        # First convolutional block
-        Conv2D(32, (3, 3), activation='relu', input_shape=(48, 48, 1)),
-        BatchNormalization(),
-        Conv2D(64, (3, 3), activation='relu'),
-        BatchNormalization(),
-        MaxPooling2D(pool_size=(2, 2)),
-        Dropout(0.25),
+class EmotionCNN(nn.Module):
+    """CNN model for emotion recognition"""
+    def __init__(self):
+        super(EmotionCNN, self).__init__()
         
-        # Second convolutional block
-        Conv2D(128, (3, 3), activation='relu'),
-        BatchNormalization(),
-        Conv2D(128, (3, 3), activation='relu'),
-        BatchNormalization(),
-        MaxPooling2D(pool_size=(2, 2)),
-        Dropout(0.25),
+        self.conv_block1 = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Dropout(0.25)
+        )
         
-        # Third convolutional block
-        Conv2D(256, (3, 3), activation='relu'),
-        BatchNormalization(),
-        MaxPooling2D(pool_size=(2, 2)),
-        Dropout(0.25),
+        self.conv_block2 = nn.Sequential(
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.Conv2d(128, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Dropout(0.25)
+        )
         
-        # Fully connected layers
-        Flatten(),
-        Dense(256, activation='relu'),
-        BatchNormalization(),
-        Dropout(0.5),
-        Dense(7, activation='softmax')  # 7 emotions
-    ])
+        self.conv_block3 = nn.Sequential(
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Dropout(0.25)
+        )
+        
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(256 * 6 * 6, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, 7)
+        )
     
-    return model
+    def forward(self, x):
+        x = self.conv_block1(x)
+        x = self.conv_block2(x)
+        x = self.conv_block3(x)
+        x = self.fc(x)
+        return x
 
 def train_model(train_dir, val_dir, epochs=50, batch_size=64):
     """Train the emotion recognition model"""
     
+    # Setup device
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
     # Data augmentation for training
-    train_datagen = ImageDataGenerator(
-        rescale=1./255,
-        rotation_range=20,
-        width_shift_range=0.2,
-        height_shift_range=0.2,
-        horizontal_flip=True,
-        zoom_range=0.2,
-        shear_range=0.2,
-        fill_mode='nearest'
-    )
+    train_transform = transforms.Compose([
+        transforms.Grayscale(),
+        transforms.Resize((48, 48)),
+        transforms.RandomRotation(20),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomAffine(degrees=0, translate=(0.2, 0.2)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
+    ])
     
-    # Only rescaling for validation
-    val_datagen = ImageDataGenerator(rescale=1./255)
+    # Only basic transforms for validation
+    val_transform = transforms.Compose([
+        transforms.Grayscale(),
+        transforms.Resize((48, 48)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
+    ])
     
-    # Load training data
-    train_generator = train_datagen.flow_from_directory(
-        train_dir,
-        target_size=(48, 48),
-        batch_size=batch_size,
-        color_mode='grayscale',
-        class_mode='categorical'
-    )
+    # Load datasets
+    train_dataset = datasets.ImageFolder(train_dir, transform=train_transform)
+    val_dataset = datasets.ImageFolder(val_dir, transform=val_transform)
     
-    # Load validation data
-    val_generator = val_datagen.flow_from_directory(
-        val_dir,
-        target_size=(48, 48),
-        batch_size=batch_size,
-        color_mode='grayscale',
-        class_mode='categorical'
-    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+    
+    print(f"Training samples: {len(train_dataset)}")
+    print(f"Validation samples: {len(val_dataset)}")
     
     # Create model
-    model = create_model()
+    model = EmotionCNN().to(device)
     
-    # Compile model
-    model.compile(
-        optimizer=Adam(learning_rate=0.0001),
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
-    )
+    # Loss and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, min_lr=1e-7)
     
-    # Print model summary
-    model.summary()
+    # Training loop
+    best_val_acc = 0.0
+    patience_counter = 0
+    patience = 10
     
-    # Callbacks
-    checkpoint = ModelCheckpoint(
-        'emotion_model.h5',
-        monitor='val_accuracy',
-        save_best_only=True,
-        mode='max',
-        verbose=1
-    )
+    for epoch in range(epochs):
+        # Training phase
+        model.train()
+        train_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            train_total += labels.size(0)
+            train_correct += (predicted == labels).sum().item()
+        
+        train_accuracy = 100 * train_correct / train_total
+        avg_train_loss = train_loss / len(train_loader)
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                
+                val_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                val_total += labels.size(0)
+                val_correct += (predicted == labels).sum().item()
+        
+        val_accuracy = 100 * val_correct / val_total
+        avg_val_loss = val_loss / len(val_loader)
+        
+        # Learning rate scheduling
+        scheduler.step(avg_val_loss)
+        
+        print(f"Epoch [{epoch+1}/{epochs}]")
+        print(f"  Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.2f}%")
+        print(f"  Val Loss: {avg_val_loss:.4f}, Val Acc: {val_accuracy:.2f}%")
+        
+        # Save best model
+        if val_accuracy > best_val_acc:
+            best_val_acc = val_accuracy
+            torch.save(model.state_dict(), 'emotion_model.pth')
+            print(f"  ✓ Saved best model with accuracy: {val_accuracy:.2f}%")
+            patience_counter = 0
+        else:
+            patience_counter += 1
+        
+        # Early stopping
+        if patience_counter >= patience:
+            print(f"\nEarly stopping triggered after {epoch+1} epochs")
+            break
     
-    early_stop = EarlyStopping(
-        monitor='val_loss',
-        patience=10,
-        restore_best_weights=True,
-        verbose=1
-    )
-    
-    reduce_lr = ReduceLROnPlateau(
-        monitor='val_loss',
-        factor=0.5,
-        patience=5,
-        min_lr=0.00001,
-        verbose=1
-    )
-    
-    # Train model
-    history = model.fit(
-        train_generator,
-        epochs=epochs,
-        validation_data=val_generator,
-        callbacks=[checkpoint, early_stop, reduce_lr]
-    )
-    
-    return model, history
+    print(f"\nTraining complete! Best validation accuracy: {best_val_acc:.2f}%")
+    return model
 
 if __name__ == "__main__":
     # You need to download the FER2013 dataset or similar
@@ -137,5 +187,5 @@ if __name__ == "__main__":
         print("  - data/validation/[emotion_folders]/")
         print("\nEmotion folders should be: angry, disgust, fear, happy, sad, surprise, neutral")
     else:
-        model, history = train_model(train_dir, val_dir)
-        print("Training complete! Model saved as 'emotion_model.h5'")
+        model = train_model(train_dir, val_dir)
+        print("Training complete! Model saved as 'emotion_model.pth'")
